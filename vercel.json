@@ -18,7 +18,8 @@
         "server.ts": {
           "includeFiles": "build/**"
         }
-      }
+      },
+      "installCommand": "cd ../.. && npm ci --include=dev"
     },
     "api": {
       "root": "apps/api",
@@ -29,7 +30,8 @@
           "includeFiles": "../../{site,industry,assets,modules}/**"
         }
       },
-      "buildCommand": "npm exec -- tsc -p ."
+      "buildCommand": "npm exec -- tsc -p .",
+      "installCommand": "cd ../.. && npm ci --include=dev"
     }
   },
   "rewrites": [
