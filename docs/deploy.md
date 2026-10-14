@@ -269,3 +269,20 @@ cd apps/web && NODE_ENV=production node --env-file=../../.env server.ts   # 网�
 三个进程要一直运行，生产环境用 systemd 或 pm2 守护（守护配置里同样设 `NODE_ENV=production`）。停止 worker 时至少给它 210 秒（systemd 的 `TimeoutStopSec`、pm2 的 `kill_timeout`），让进行中的付费调用收尾；被提前杀掉的调用结果不明，要等至少半小时自动放行后才会重试。
 
 开发时用带热更新的方式：`npm run dev:api`、`npm run dev:worker`、`npm run dev:web`。开发时想免登录进后台，在 `.env` 里设 `DEV_AUTH_ROLE=admin`（生产环境会拒绝启动）。
+
+## Vercel + Neon：仅浏览部署
+
+仓库根目录的 `vercel.json` 使用 Vercel Services，把 `apps/web/server.ts` 和
+`apps/api/src/vercel.ts` 一起发布。前端仍通过 HTTP 访问 API，`API_BASE_URL`
+由私有 service binding 注入。数据库使用 Neon 的 pooled `DATABASE_URL`，
+先用 direct connection 或 Neon 管理接口按文件顺序应用 `database/migrations/`。
+
+在 Vercel 设置 `SITE_URL`、`DATABASE_URL`、`ADMIN_PASSWORD`（至少 12 位）、
+`SESSION_SECRET` 和 `IMG_PROXY_SIGN_SECRET`。设置 `AIHOT_DATA_DIR=/tmp/aihot`，
+此目录只作临时缓存，不用于持久化内容；持久数据在 Neon。
+
+本次仅浏览部署必须保持 `COLLECT_ENABLED=false`、`MODEL_CALLS_ENABLED=false`，
+飞书和 IndexNow 开关也关闭。不配置模型密钥，不部署 worker，不设置 cron。
+API 入口在安全开关打开时拒绝启动。信源默认不导入，内容列表显示真实空状态。
+网站使用仓库默认的 MyHOT 名称与图标。正式运营前，请由站点所有者审定站名、
+信源以及 `site/pages/` 中的条款与隐私模板。

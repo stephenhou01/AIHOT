@@ -1,0 +1,54 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "web": {
+      "root": "apps/web",
+      "framework": "node",
+      "entrypoint": "server.ts",
+      "buildCommand": "npm run build",
+      "bindings": [
+        {
+          "type": "service",
+          "service": "api",
+          "format": "url",
+          "env": "API_BASE_URL"
+        }
+      ],
+      "functions": {
+        "server.ts": {
+          "includeFiles": "build/**"
+        }
+      }
+    },
+    "api": {
+      "root": "apps/api",
+      "framework": "node",
+      "entrypoint": "src/vercel.ts",
+      "functions": {
+        "src/vercel.ts": {
+          "includeFiles": "../../{site,industry,assets,modules}/**"
+        }
+      }
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": {
+        "service": "api"
+      }
+    },
+    {
+      "source": "/:path((?:feed(?:\\.xml|/.*)?|rss(?:\\.xml)?|atom\\.xml|openapi-v1\\.json|llms\\.txt|robots\\.txt|sitemap\\.xml|manifest\\.webmanifest|sitemaps/.*|\\.well-known/.*|favicon\\.ico|icon(?:-192)?\\.png|apple-icon\\.png|logo\\.svg|og/.*|contact/.*|items/[^/]+/markdown))",
+      "destination": {
+        "service": "api"
+      }
+    },
+    {
+      "source": "/:path*",
+      "destination": {
+        "service": "web"
+      }
+    }
+  ]
+}

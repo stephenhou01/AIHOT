@@ -169,8 +169,11 @@ process.on("unhandledRejection", (reason) => {
 });
 
 server.keepAliveTimeout = 65_000;
-server.listen(PORT, HOST, () => console.log(JSON.stringify({ level: "info", msg: "web started", port: (server.address() as import("node:net").AddressInfo).port, pid: process.pid })));
+if (!process.env.VERCEL) server.listen(PORT, HOST, () => console.log(JSON.stringify({ level: "info", msg: "web started", port: (server.address() as import("node:net").AddressInfo).port, pid: process.pid })));
 
 const shutdown = () => server.close(() => process.exit(0));
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
+
+// Vercel owns the HTTP listener in the serverless runtime.
+export default server;
