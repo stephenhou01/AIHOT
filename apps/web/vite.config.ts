@@ -38,6 +38,8 @@ export default defineConfig({
   // The modules' pages import the engine's web code by this name (tsconfig.json paths).
   resolve: { alias: { "@aihot/web/": `${path.resolve(import.meta.dirname, "app")}/` } },
   server: { port: 3000, strictPort: true },
+  // Ship the SSR dependencies with the generated server bundle for Vercel tracing.
+  ssr: { noExternal: true },
   build: {
     rolldownOptions: {
       output: {

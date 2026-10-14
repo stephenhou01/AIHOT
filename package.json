@@ -13,7 +13,10 @@
     "node": ">=24.11"
   },
   "overrides": {
-    "fflate": "0.7.5"
+    "fflate": "0.7.5",
+    "sanitize-html": {
+      "htmlparser2": "10.0.0"
+    }
   },
   "scripts": {
     "db:migrate": "node --env-file-if-exists=.env scripts/migrate.ts",
