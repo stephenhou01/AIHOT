@@ -28,7 +28,8 @@
         "src/vercel.ts": {
           "includeFiles": "../../{site,industry,assets,modules}/**"
         }
-      }
+      },
+      "buildCommand": "npm exec -- tsc -p ."
     }
   },
   "rewrites": [
