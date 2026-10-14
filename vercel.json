@@ -16,7 +16,7 @@
       ],
       "functions": {
         "server.ts": {
-          "includeFiles": "build/**"
+          "includeFiles": "{apps/web/build/**,build/**}"
         }
       },
       "installCommand": "cd ../.. && npm ci --include=dev"
@@ -27,7 +27,7 @@
       "entrypoint": "src/vercel.ts",
       "functions": {
         "src/vercel.ts": {
-          "includeFiles": "../../{site,industry,assets,modules}/**"
+          "includeFiles": "{site,industry,assets,modules}/**"
         }
       },
       "buildCommand": "npm exec -- tsc -p .",
@@ -48,7 +48,7 @@
       }
     },
     {
-      "source": "/:path*",
+      "source": "/(.*)",
       "destination": {
         "service": "web"
       }
