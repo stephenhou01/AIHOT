@@ -210,6 +210,11 @@ async function batch(opts: { budgetMs?: number }): Promise<BatchReport> {
   const busy = queues.some((q) => (report.pending.queues[q]?.queued ?? 0) + (report.pending.queues[q]?.active ?? 0) > 0);
   report.done = !unfinished && !moreReports && !busy && soon === null;
   if (!report.done && !busy && !unfinished && soon !== null) report.retryAfterSeconds = Math.max(1, Math.ceil((soon.getTime() - Date.now()) / 1000));
+  // Only jobs running elsewhere (another call, or one that died until its job expires): come back later.
+  const queuedHere = queues.some((q) => (report.pending.queues[q]?.queued ?? 0) > 0);
+  if (!report.done && busy && !queuedHere && !unfinished && !moreReports) {
+    report.retryAfterSeconds = Math.min(30, report.retryAfterSeconds ?? 30);
+  }
   // Grouping held by another call (or by a call that died, until its lease lapses): ask again later
   // rather than straight away, unless this call had other work cut short.
   if (!report.done && groupingElsewhere && (await runnable(queues.filter((q) => q !== QUEUES.group))) === 0) {
