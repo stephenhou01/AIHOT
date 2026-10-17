@@ -20,7 +20,7 @@ config.allowPrivateNetworkFetch = true;
 let items = [1, 2, 3];
 // The feed and its article pages (body extraction reads them), all local.
 const feed = http.createServer((req, res) => {
-  const page = /^\/article\/(\d)$/.exec(req.url ?? "")?.[1];
+  const page = /^\/article\/(\d+)$/.exec(req.url ?? "")?.[1];
   if (page) {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(`<!doctype html><html><head><title>AI lab ${T} releases model ${page}</title></head><body><article><h1>AI lab ${T} releases model ${page}</h1>` +
@@ -55,7 +55,7 @@ const provider = await stub((_hit, request) => {
     const ids = [...text.matchAll(/【候选 (C\d+)】/g)].map((m) => m[1]);
     return { choices: [{ message: { content: JSON.stringify({ query: "模型发布", decisions: ids.map((id) => ({ id, relation: "UNRELATED", confidence: 1, note: "" })), selection: { addsValue: true, reason: "fixture" } }) } }] };
   }
-  const n = /model (\d)/.exec(request.body)?.[1] ?? "?";
+  const n = /model (\d+)/.exec(request.body)?.[1] ?? "?";
   calls.set(`${n}:${step}`, (calls.get(`${n}:${step}`) ?? 0) + 1);
   const content = step === "prefilter" ? { label: "PASS", reason: "fixture" }
     : step === "score" ? { attentionScore: SELECTING_SCORE }
@@ -204,4 +204,32 @@ test("a call without time left starts no work and is not done", async () => {
   assert.equal(Object.values(short.jobs as Record<string, { completed: number }>).reduce((sum, j) => sum + j.completed, 0), 0);
   await drain();
   assert.equal(calls.get("8:prefilter"), 1);
+});
+
+test("an open budget breaker stops paid calls, and the batch says so instead of spinning", async () => {
+  items = [11];
+  await sql`UPDATE sources SET next_fetch_at = now() WHERE id = ${SOURCE}`;
+  await sql`DELETE FROM job_runs WHERE job = 'sources.schedule'`;
+  const saved = await sql<{ service: string; per_minute: number; per_hour: number; per_day: number }[]>`SELECT service, per_minute, per_hour, per_day FROM budgets`;
+  await sql`UPDATE budgets SET per_day = 0`;
+  try {
+    const before = calls.size + others;
+    const reports = await drain();
+    const last = reports.at(-1);
+    assert.equal(calls.size + others, before, "no paid request past the breaker");
+    assert.equal(calls.get("11:prefilter"), undefined);
+    assert.ok(last.pending.blocked.some((b: string) => b.includes("budget (stopped)")), JSON.stringify(last.pending.blocked));
+    const [{ state }] = await sql<{ state: string }[]>`
+      SELECT processing_state AS state FROM articles WHERE source_id = ${SOURCE} AND url LIKE '%/article/11'`;
+    assert.equal(state, "new", "the article waits for the window rather than failing");
+    const status = (await call("/api/pipeline/status", SECRET, "GET")).body;
+    assert.ok(status.budgets.some((b: { exhausted: string | null }) => b.exhausted === "stopped"));
+  } finally {
+    for (const b of saved) await sql`UPDATE budgets SET per_minute = ${b.per_minute}, per_hour = ${b.per_hour}, per_day = ${b.per_day} WHERE service = ${b.service}`;
+  }
+  // Once the window frees up (here: at once), the waiting article goes through exactly once.
+  // (The sweep leaves articles younger than three minutes to the collector's own queueing.)
+  await sql`UPDATE articles SET processing_retry_at = now(), created_at = now() - interval '5 minutes' WHERE source_id = ${SOURCE} AND url LIKE '%/article/11'`;
+  await drain();
+  assert.equal(calls.get("11:prefilter"), 1);
 });

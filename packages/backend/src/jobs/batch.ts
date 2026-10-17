@@ -313,6 +313,7 @@ export async function pipelinePending(): Promise<PipelinePending> {
   const blocked = [
     ...(collecting() ? [] : ["collection (COLLECT_ENABLED)"]),
     ...(config.modelCallsEnabled ? [] : ["analysis, grouping, digests, translations and editions (MODEL_CALLS_ENABLED)"]),
+    ...(await exhaustedBudgets()).map((b) => `${b.service} budget (${b.window}): its calls wait until the window frees up`),
   ];
   return {
     queues: Object.fromEntries(rows.map((r) => [r.name, { queued: r.queued, active: r.active, deferred: r.deferred }])),
@@ -321,6 +322,23 @@ export async function pipelinePending(): Promise<PipelinePending> {
     articlesAwaitingGrouping: counts!.grouping,
     blocked,
   };
+}
+
+/** Services whose circuit breaker is open now, by the same windows the receipts check (providers/receipts.ts). */
+async function exhaustedBudgets(): Promise<Array<{ service: string; window: "stopped" | "minute" | "hour" | "day" }>> {
+  const rows = await sql<{ service: string; per_minute: number; per_hour: number; per_day: number; minute: number; hour: number; day: number }[]>`
+    SELECT b.service, b.per_minute, b.per_hour, b.per_day,
+           count(a.id) FILTER (WHERE a.started_at > now() - interval '1 minute')::int AS minute,
+           count(a.id) FILTER (WHERE a.started_at > now() - interval '1 hour')::int AS hour,
+           count(a.id)::int AS day
+    FROM budgets b
+    LEFT JOIN receipt_attempts a ON a.service = b.service AND a.origin = 'live' AND a.started_at > now() - interval '1 day'
+    GROUP BY b.service, b.per_minute, b.per_hour, b.per_day ORDER BY b.service`;
+  return rows.flatMap((r) => {
+    const window = r.per_minute <= 0 || r.per_hour <= 0 || r.per_day <= 0 ? "stopped" as const
+      : r.day >= r.per_day ? "day" as const : r.hour >= r.per_hour ? "hour" as const : r.minute >= r.per_minute ? "minute" as const : null;
+    return window ? [{ service: r.service, window }] : [];
+  });
 }
 
 /** The read-only view for whoever triggers the batches: progress, recent trouble and paid usage. */
@@ -358,6 +376,7 @@ export async function pipelineStatus() {
   const [lastBatch] = await sql<{ started_at: Date; finished_at: Date | null; status: string; done: boolean | null; errors: string[] | null }[]>`
     SELECT started_at, finished_at, status, (detail->>'done')::boolean AS done, detail->'errors' AS errors
     FROM job_runs WHERE job = 'pipeline.batch' ORDER BY started_at DESC LIMIT 1`;
+  const open = new Map((await exhaustedBudgets()).map((b) => [b.service, b.window]));
   return {
     valves: { collect: collecting(), modelCalls: config.modelCallsEnabled },
     lastCollectionAt: intake!.last_fetch_at,
@@ -370,7 +389,7 @@ export async function pipelineStatus() {
     recentErrors: { failedRuns, failedArticles, failedJobs },
     budgets: budgets.map((b) => ({
       service: b.service, limits: b.per_day === null ? null : { perMinute: b.per_minute, perHour: b.per_hour, perDay: b.per_day },
-      usedHour: b.used_hour, usedDay: b.used_day,
+      usedHour: b.used_hour, usedDay: b.used_day, exhausted: open.get(b.service) ?? null,
       tokensDay: { prompt: Number(b.prompt_tokens), completion: Number(b.completion_tokens) },
       costDay: b.cost === null ? null : { amount: Number(b.cost), currency: b.currency },
     })),
