@@ -167,6 +167,21 @@ export async function work<Q extends QueueName>(boss: PgBoss, name: Q, options: 
   await boss.work<JobData[Q]>(name, options, async ([job]) => (job ? handler(job.data) : undefined));
 }
 
+/**
+ * One queue's handler and how many of its jobs run at once. The worker polls with it (workHandlers); the
+ * on-demand batch (jobs/batch.ts) claims jobs with the same handler and concurrency.
+ */
+export type QueueHandler = { [Q in QueueName]: { queue: Q; concurrency: number; pollingIntervalSeconds: number; run: (data: JobData[Q]) => Promise<unknown> } }[QueueName];
+
+export const handler = <Q extends QueueName>(queue: Q, concurrency: number, pollingIntervalSeconds: number, run: (data: JobData[Q]) => Promise<unknown>) =>
+  ({ queue, concurrency, pollingIntervalSeconds, run }) as QueueHandler;
+
+export async function workHandlers(boss: PgBoss, handlers: readonly QueueHandler[]): Promise<void> {
+  for (const h of handlers) {
+    await work(boss, h.queue, { localConcurrency: h.concurrency, pollingIntervalSeconds: h.pollingIntervalSeconds }, h.run as (data: unknown) => Promise<unknown>);
+  }
+}
+
 /** The worker's handlers for the site's modules' queues. */
 export async function workModuleQueues(boss: PgBoss): Promise<void> {
   for (const queue of serverModules().flatMap((m) => m.queues ?? [])) {

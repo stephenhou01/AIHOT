@@ -12,7 +12,7 @@ import { isHistorical } from "../content/materials.ts";
 import { publishArticle } from "../publication/publish.ts";
 import { BudgetExceededError, ProviderRejectedError, ReceiptBusyError, ReceiptUnknownError } from "../providers/receipts.ts";
 import { ModelOutputError } from "../providers/llm.ts";
-import { enqueue, QUEUES, shutdownSignal, work } from "./queue.ts";
+import { enqueue, handler, QUEUES, shutdownSignal, workHandlers } from "./queue.ts";
 
 /** Minutes to wait after the n-th failed attempt; one more failure after the last ends in "failed". */
 const RETRY_MINUTES = [5, 10, 20, 40, 60, 120, 240, 360];
@@ -184,44 +184,49 @@ async function afterFailure(articleId: string, revision: number, error: unknown)
   return { state: "retrying", retryAt };
 }
 
+/** Handlers are built when a process registers them, so they take the queue names as configured then. */
+export const analysisHandler = () => handler(QUEUES.analyze, 6, 2, ({ articleId, attemptTag }) => processArticle(articleId, { attemptTag }));
+
 export async function registerContentJobs(boss: PgBoss) {
-  await work(boss, QUEUES.analyze, { localConcurrency: 6, pollingIntervalSeconds: 2 }, ({ articleId, attemptTag }) => processArticle(articleId, { attemptTag }));
+  await workHandlers(boss, [analysisHandler()]);
 }
 
 /**
  * Body extraction before analysis. Failures are retried a few times; after that the article is judged
  * on the excerpt it has ("unconfirmed" body, never a wrong one).
  */
-export async function registerExtractionJobs(boss: PgBoss) {
-  await work(boss, QUEUES.extractBody, { localConcurrency: 4, pollingIntervalSeconds: 2 }, async ({ articleId }) => {
-    const [input] = await sql<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId}`;
-    if (!input) return { state: "missing" };
-    try {
-      const state = await extractArticleBody(articleId);
-      // Extraction's failures do not count against the analysis that follows (a new revision starts over anyway).
-      if (state !== "skipped") await sql`UPDATE articles SET processing_attempts = 0, processing_retry_at = NULL WHERE id = ${articleId} AND revision = ${input.revision}`;
-      // A newer revision may still need a body after this task's result was discarded.
+export const extractionHandler = () => handler(QUEUES.extractBody, 4, 2, async ({ articleId }) => {
+  const [input] = await sql<{ revision: number }[]>`SELECT revision FROM articles WHERE id = ${articleId}`;
+  if (!input) return { state: "missing" };
+  try {
+    const state = await extractArticleBody(articleId);
+    // Extraction's failures do not count against the analysis that follows (a new revision starts over anyway).
+    if (state !== "skipped") await sql`UPDATE articles SET processing_attempts = 0, processing_retry_at = NULL WHERE id = ${articleId} AND revision = ${input.revision}`;
+    // A newer revision may still need a body after this task's result was discarded.
+    await queueProcessing(articleId);
+    return { state };
+  } catch (error) {
+    // A deploy is not the article's failure: pg-boss retries this job after the restart, as for analysis.
+    if (shutdownSignal.signal.aborted) throw error;
+    const message = String(error instanceof Error ? error.message : error).slice(0, 500);
+    const [a] = await sql<{ processing_attempts: number }[]>`
+      UPDATE articles SET processing_attempts = processing_attempts + 1, processing_error = ${`extract: ${message}`},
+        processing_queued_at = NULL, processing_retry_at = now() + interval '10 minutes'
+      WHERE id = ${articleId} AND revision = ${input.revision} AND body_status <> 'ok' RETURNING processing_attempts`;
+    if (!a) {
       await queueProcessing(articleId);
-      return { state };
-    } catch (error) {
-      // A deploy is not the article's failure: pg-boss retries this job after the restart, as for analysis.
-      if (shutdownSignal.signal.aborted) throw error;
-      const message = String(error instanceof Error ? error.message : error).slice(0, 500);
-      const [a] = await sql<{ processing_attempts: number }[]>`
-        UPDATE articles SET processing_attempts = processing_attempts + 1, processing_error = ${`extract: ${message}`},
-          processing_queued_at = NULL, processing_retry_at = now() + interval '10 minutes'
-        WHERE id = ${articleId} AND revision = ${input.revision} AND body_status <> 'ok' RETURNING processing_attempts`;
-      if (!a) {
-        await queueProcessing(articleId);
-        return { state: "skipped" };
-      }
-      if (a.processing_attempts < MAX_EXTRACT_FAILURES) return { state: "retrying" };
-      await sql`UPDATE articles SET body_status = 'unconfirmed', processing_attempts = 0, processing_retry_at = NULL
-        WHERE id = ${articleId} AND revision = ${input.revision} AND body_status = 'pending'`;
-      await queueProcessing(articleId);
-      return { state: "unconfirmed" };
+      return { state: "skipped" };
     }
-  });
+    if (a.processing_attempts < MAX_EXTRACT_FAILURES) return { state: "retrying" };
+    await sql`UPDATE articles SET body_status = 'unconfirmed', processing_attempts = 0, processing_retry_at = NULL
+      WHERE id = ${articleId} AND revision = ${input.revision} AND body_status = 'pending'`;
+    await queueProcessing(articleId);
+    return { state: "unconfirmed" };
+  }
+});
+
+export async function registerExtractionJobs(boss: PgBoss) {
+  await workHandlers(boss, [extractionHandler()]);
 }
 
 /**

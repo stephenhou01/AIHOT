@@ -286,3 +286,39 @@ cd apps/web && NODE_ENV=production node --env-file=../../.env server.ts   # 网�
 API 入口在安全开关打开时拒绝启动。信源默认不导入，内容列表显示真实空状态。
 网站使用仓库默认的 MyHOT 名称与图标。正式运营前，请由站点所有者审定站名、
 信源以及 `site/pages/` 中的条款与隐私模板。
+
+## Vercel + Neon：按需批处理流水线
+
+Vercel 上没有常驻 worker。设置 `CRON_SECRET` 后，API 提供两个受保护的接口，由外部定时器驱动整条流水线（采集 → 预筛 → 两次评分 → 中文标题摘要 → 归组与热度 → 日报、周报、月报）：
+
+| 接口 | 做什么 |
+|---|---|
+| `POST /api/pipeline/batch`（也接受 `GET`） | 在时间预算内跑一批：到期的维护任务（安排采集、重试扫描、恢复），然后按 worker 的并发领取队列里的任务（采集、正文、判断与写作、归组、事件综述、推送、图片），队列清空后再跑读取当日结果的任务（热度、事件关联、全文翻译、到期的日报周报月报）。返回这一批做了什么、各阶段还剩多少，以及 `done` |
+| `GET /api/pipeline/status` | 只读：最近一次采集、24 小时内新收录与精选数、待处理任务、最近的失败、各付费服务今天的用量与 token |
+
+两个接口都要 `Authorization: Bearer <CRON_SECRET>`（至少 16 位）；没设 `CRON_SECRET` 时一律拒绝。
+
+调用方式：每天至少一轮，反复调用 batch 直到返回 `done: true`。
+
+- `done: false` 且 `retryAfterSeconds` 有值：剩下的工作要等一会儿才到期（比如归组一分钟后才写事件综述、模型限流后的重试），等这么多秒再调。
+- `done: false` 且 `retryAfterSeconds` 为空：还有能做的工作（或另一个调用正在做），马上再调。
+- 一次调用默认最多用 270 秒开始新工作，`vercel.json` 给 API 函数的 `maxDuration` 是 300 秒；`?budget=<秒>` 可以缩短单次调用。
+- 几个调用同时到达是安全的：任务从 pg-boss 队列里领取，同一篇文章不会被处理两次；归组只由一个调用做；定时任务用租约（`delivery_leases`）避免同时跑。空闲时调用不花钱，直接返回 `done: true`。
+- 被平台中途截断的调用，正在做的任务按 pg-boss 的过期时间重试，付费请求按回执规则复用或放行，和 worker 被杀时一样。
+- 日报在 `site/site.ts` 的 `EDITION_TIMES.daily`（默认北京时间 08:00）之后才到期。每天那一轮放在这个时间之后开始，前一天的资料先处理完再写日报；在这之前跑完的一轮不会写当天到期的日报，要等下一轮。周报、月报同理。
+
+仍然遵守安全阀和预算熔断：`COLLECT_ENABLED` 不是 `true` 时不采集、不抓正文；`MODEL_CALLS_ENABLED` 不是 `true` 时不领取判断、归组、综述任务，也不写翻译和日报，接口在 `pending.blocked` 里说明。付费请求照常经过回执和后台“设置 → 付费请求上限”。
+
+Vercel 上要加的环境变量：`CRON_SECRET`、`COLLECT_ENABLED=true`、`MODEL_CALLS_ENABLED=true` 和模型配置（`LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 等，见 `.env.example`）。没有 `CRON_SECRET` 时，API 入口在安全阀打开时仍拒绝启动。第一次调用 batch 会在数据库里建 pg-boss 的表（`pgboss` schema），数据库账号要有建 schema 的权限。
+
+和 Docker/worker 部署二选一：同一个数据库上不要同时跑 worker 和 batch。批处理模式下，后台“运行”页的定时任务列表读的是 worker 注册的计划，看不到这些任务的计划，但每次运行仍记在 `job_runs`（每次 batch 记为 `pipeline.batch`）。
+
+例子（每天北京时间 08:05 开始）：
+
+```bash
+until out=$(curl -sf -X POST -H "Authorization: Bearer $CRON_SECRET" --max-time 330 https://<域名>/api/pipeline/batch) \
+      && echo "$out" | jq -e '.done' >/dev/null; do
+  sleep "$(echo "$out" | jq -r '.retryAfterSeconds // 5')"
+done
+curl -s -H "Authorization: Bearer $CRON_SECRET" https://<域名>/api/pipeline/status | jq .
+```

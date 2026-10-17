@@ -11,7 +11,7 @@ import type { QueueOptions } from "./jobs/queue.ts";
 import type { Finding } from "./notify/feishu.ts";
 import type { Topic, TopicMember } from "./publication/topics.ts";
 
-/** A cron schedule (Asia/Shanghai), recorded in job_runs like the engine's (apps/worker/src/schedules.ts). */
+/** A cron schedule (Asia/Shanghai), recorded in job_runs like the engine's (jobs/schedules.ts). */
 export interface Scheduled {
   name: string;
   cron: string;
@@ -233,7 +233,7 @@ export interface ServerModule {
   /**
    * Chooses which problems the owner hears about: the first installed module with one (operations/alerts.ts,
    * operations/watch.ts). What it holds back is the module's to hand to whoever handles it; with one, the
-   * daily digest and the weekly source report have no schedule (apps/worker/src/schedules.ts).
+   * daily digest and the weekly source report have no schedule (jobs/schedules.ts).
    */
   responder?: Responder;
   /** Its share of the daily retention run (operations/retention.ts): what it deleted or aggregated. */
