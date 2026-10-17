@@ -8,7 +8,7 @@ import http from "node:http";
 import { after, before, test } from "node:test";
 import { config } from "@aihot/backend/config";
 import { closeDb, sql } from "@aihot/backend/db";
-import { stopBoss } from "@aihot/backend/jobs/queue";
+import { ensureQueue, getBoss, QUEUES, stopBoss } from "@aihot/backend/jobs/queue";
 import { buildApp } from "../apps/api/src/app.ts";
 
 const T = tag();
@@ -232,4 +232,22 @@ test("an open budget breaker stops paid calls, and the batch says so instead of 
   await sql`UPDATE articles SET processing_retry_at = now(), created_at = now() - interval '5 minutes' WHERE source_id = ${SOURCE} AND url LIKE '%/article/11'`;
   await drain();
   assert.equal(calls.get("11:prefilter"), 1);
+});
+
+test("a job running elsewhere keeps the batch from being done, and the caller is asked to come back", async () => {
+  await drain();
+  const boss = await getBoss();
+  await ensureQueue(QUEUES.digest);
+  // Another call (or one that died) holds this job: claimed, not finished.
+  await boss.send(QUEUES.digest, { storyId: "held-elsewhere" });
+  const [job] = await boss.fetch(QUEUES.digest);
+  assert.ok(job, "claimed by the other caller");
+  const before = calls.size + others;
+  const busy = (await call()).body;
+  assert.equal(busy.done, false);
+  assert.ok(busy.retryAfterSeconds >= 1 && busy.retryAfterSeconds <= 30, `retryAfterSeconds ${busy.retryAfterSeconds}`);
+  assert.equal(busy.pending.queues[QUEUES.digest].active, 1);
+  assert.equal(calls.size + others, before, "nothing paid while waiting");
+  await boss.complete(QUEUES.digest, job!.id);
+  assert.equal((await call()).body.done, true, "done once the other caller finishes");
 });
