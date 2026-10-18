@@ -1,12 +1,25 @@
 // Bailian's decision model (decision-model-preview): not a chat model. POST {base}/systemone takes a
 // `state` and typed questions (choice / noul / score) and answers each with probabilities in one
 // forward pass, no text. Calls go through receipts like every paid request, on their own budget row
-// (`decision`). Address and key default to the deployment's model (LLM_BASE_URL / LLM_API_KEY).
+// (`decision`, added with DECISION_BUDGET on first use). Address and key default to the deployment's model (LLM_BASE_URL / LLM_API_KEY).
 import { config, credential } from "../config.ts";
+import { sql } from "../db.ts";
 import { sha256 } from "../lib/ids.ts";
 import { assertAccepted, paidRequest, ProviderRejectedError, rejectReceivedResponse } from "./receipts.ts";
 
 export const DECISION_SERVICE = "decision";
+/** The breaker's starting limits. Release migrations cannot seed rows, so the first call adds it; the admin's settings page changes it. */
+export const DECISION_BUDGET = { perMinute: 60, perHour: 1000, perDay: 3000 };
+
+let budgetSeeded = false;
+async function seedBudget(): Promise<void> {
+  if (budgetSeeded) return;
+  await sql`
+    INSERT INTO budgets (service, per_minute, per_hour, per_day, note)
+    VALUES (${DECISION_SERVICE}, ${DECISION_BUDGET.perMinute}, ${DECISION_BUDGET.perHour}, ${DECISION_BUDGET.perDay}, '决策模型熔断（精选前的价值初筛 triage）')
+    ON CONFLICT (service) DO NOTHING`;
+  budgetSeeded = true;
+}
 
 export type DecisionQuestion =
   | { type: "choice"; instructions?: string; criteria: Record<string, string> }
@@ -59,6 +72,7 @@ function endpoint(): { baseUrl: string; apiKey: string } {
 export async function decide(opts: DecisionOptions): Promise<DecisionResult> {
   if (!config.modelCallsEnabled) throw new Error("Model calls are disabled (MODEL_CALLS_ENABLED=false)");
   const { baseUrl, apiKey } = endpoint();
+  await seedBudget();
   const stateText = typeof opts.state === "string" ? opts.state : JSON.stringify(opts.state);
   const questionsText = JSON.stringify(opts.questions);
   const receipt = await paidRequest(
