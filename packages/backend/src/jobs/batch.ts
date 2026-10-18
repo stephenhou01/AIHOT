@@ -16,6 +16,7 @@ import { sql } from "../db.ts";
 import { logError } from "../lib/log-error.ts";
 import { serverModules, type Scheduled } from "../modules.ts";
 import { translatePending } from "../editorial/translate.ts";
+import { triageSettings } from "../editorial/triage.ts";
 import { composeDueReports } from "../reports/compose.ts";
 import { analysisHandler } from "./content.ts";
 import { eventHandlers } from "./events.ts";
@@ -381,6 +382,7 @@ export async function pipelineStatus() {
   const open = new Map((await exhaustedBudgets()).map((b) => [b.service, b.window]));
   return {
     valves: { collect: collecting(), modelCalls: config.modelCallsEnabled },
+    triage: triageStatus(),
     lastCollectionAt: intake!.last_fetch_at,
     lastSuccessfulCollectionAt: intake!.last_ok_at,
     lastCollectionScheduledAt: intake!.last_schedule_at,
@@ -396,4 +398,14 @@ export async function pipelineStatus() {
       costDay: b.cost === null ? null : { amount: Number(b.cost), currency: b.currency },
     })),
   };
+}
+
+/** The triage settings in force, or the configuration error that would fail every triage. */
+function triageStatus(): { enabled: boolean; model: string; threshold: number } | { error: string } {
+  try {
+    const { enabled, model, threshold } = triageSettings();
+    return { enabled, model, threshold };
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
 }
