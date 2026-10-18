@@ -4,7 +4,7 @@ import { sql } from "../db.ts";
 import { republishSource } from "../publication/publish.ts";
 import { computeHotRanking } from "../events/hot.ts";
 import { emit } from "../modules.ts";
-import { QUEUES, work } from "./queue.ts";
+import { handler, QUEUES, workHandlers } from "./queue.ts";
 
 export const republishKey = (sourceId: string) => `republish.source:${sourceId}`;
 
@@ -13,8 +13,8 @@ async function progress(sourceId: string, value: Record<string, unknown>) {
             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_by = EXCLUDED.updated_by, updated_at = now()`;
 }
 
-export async function registerPublicationJobs(boss: PgBoss) {
-  await work(boss, QUEUES.republishSource, { localConcurrency: 1, pollingIntervalSeconds: 2 }, async ({ sourceId }) => {
+export const publicationHandlers = () => [
+  handler(QUEUES.republishSource, 1, 2, async ({ sourceId }) => {
     const startedAt = new Date().toISOString();
     await progress(sourceId, { status: "running", done: 0, total: null, startedAt });
     const result = await republishSource(sourceId, (done, total) => progress(sourceId, { status: "running", done, total, startedAt }));
@@ -26,5 +26,9 @@ export async function registerPublicationJobs(boss: PgBoss) {
     if (result.total > 0) await emit("sourceRepublished", { sourceId });
     await progress(sourceId, { status: "done", ...result, startedAt, finishedAt: new Date().toISOString() });
     return result;
-  });
+  }),
+];
+
+export async function registerPublicationJobs(boss: PgBoss) {
+  await workHandlers(boss, publicationHandlers());
 }

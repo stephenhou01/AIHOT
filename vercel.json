@@ -27,7 +27,8 @@
       "entrypoint": "src/vercel.ts",
       "functions": {
         "src/vercel.ts": {
-          "includeFiles": "{{site,industry,assets,modules}/**,node_modules/{harfbuzzjs,satori}/**}"
+          "includeFiles": "{{site,industry,assets,modules}/**,node_modules/{harfbuzzjs,satori}/**}",
+          "maxDuration": 300
         }
       },
       "buildCommand": "npm exec -- tsc -p .",

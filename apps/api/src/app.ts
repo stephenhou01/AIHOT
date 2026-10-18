@@ -10,6 +10,7 @@ import { registerOg } from "./routes/og.ts";
 import { registerAdminAuth } from "./routes/admin-auth.ts";
 import { registerAdmin } from "./routes/admin.ts";
 import { registerIngest } from "./routes/ingest.ts";
+import { registerPipeline } from "./routes/pipeline.ts";
 import { registerV1, registerV1Fallbacks } from "./routes/v1.ts";
 import { registerAgent } from "./routes/agent.ts";
 import { registerMedia } from "./routes/media.ts";
@@ -94,6 +95,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   registerAdminAuth(app);
   registerAdmin(app);
   registerIngest(app);
+  registerPipeline(app);
   registerV1(app);
   registerAgent(app);
   registerMedia(app);

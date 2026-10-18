@@ -58,8 +58,8 @@ test("packages never import the apps, and nothing below the admin imports it", (
 });
 
 // Public routes read through the public read faces; the rest are the reader's own writes (feedback) and
-// the image proxy. Admin and ingest routes may call any backend use case.
-const PRIVATE_ROUTES = new Set(["admin.ts", "admin-auth.ts", "ingest.ts"]);
+// the image proxy. Admin, ingest and pipeline (cron) routes may call any backend use case.
+const PRIVATE_ROUTES = new Set(["admin.ts", "admin-auth.ts", "ingest.ts", "pipeline.ts"]);
 const PUBLIC_READS = [
   /^publication\//, /^site\//, /^lib\//, /^config\.ts$/, /^operations\/feedback\.ts$/, /^media\//, /^jobs\/queue\.ts$/, /^modules\.ts$/,
 ];
