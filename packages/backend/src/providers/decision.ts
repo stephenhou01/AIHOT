@@ -110,7 +110,7 @@ export async function decide(opts: DecisionOptions): Promise<DecisionResult> {
       return {
         response: { ...json, _latencyMs: Date.now() - started },
         requestId: (json.request_id as string | undefined) ?? res.headers.get("x-request-id"),
-        usage: (json.usage as Record<string, unknown> | undefined) ?? null,
+        usage: recordedUsage(json.usage),
         cost: null,
       };
     },
@@ -123,4 +123,13 @@ export async function decide(opts: DecisionOptions): Promise<DecisionResult> {
     throw new DecisionOutputError(`Decision model ${opts.model} gave no answer for ${missing.join(", ")} (${opts.subject})`, receipt.receiptId);
   }
   return { answers, receiptId: receipt.receiptId, reused: receipt.reused, usage: response.usage ?? null };
+}
+
+/** The decision API reports `input_tokens`; token totals (status, admin models) read `prompt_tokens`. */
+function recordedUsage(usage: unknown): Record<string, unknown> | null {
+  if (!usage || typeof usage !== "object") return null;
+  const u = usage as Record<string, unknown>;
+  return typeof u.input_tokens === "number" && u.prompt_tokens === undefined
+    ? { ...u, prompt_tokens: u.input_tokens, completion_tokens: 0 }
+    : u;
 }

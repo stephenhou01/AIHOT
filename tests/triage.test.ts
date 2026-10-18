@@ -105,6 +105,10 @@ test("below the threshold the article stops like a BLOCK, before the paid steps"
   assert.equal(row.triage!.dropped, true);
   const receipts = await sql<{ service: string; status: string }[]>`SELECT service, status FROM receipts WHERE subject LIKE ${`article:${id}%`} AND service = 'decision'`;
   assert.deepEqual(receipts.map((r) => ({ ...r })), [{ service: "decision", status: "completed" }]);
+  const [attempt] = await sql<{ prompt_tokens: string }[]>`
+    SELECT a.usage->>'prompt_tokens' AS prompt_tokens FROM receipt_attempts a JOIN receipts r ON r.id = a.receipt_id
+    WHERE r.subject LIKE ${`article:${id}%`} AND r.service = 'decision'`;
+  assert.equal(attempt?.prompt_tokens, "42", "input_tokens count toward the token totals");
   const [budget] = await sql`SELECT per_minute, per_hour, per_day FROM budgets WHERE service = 'decision'`;
   assert.deepEqual({ ...budget }, { per_minute: 60, per_hour: 1000, per_day: 3000 }, "the breaker's row is added on first use");
 });
