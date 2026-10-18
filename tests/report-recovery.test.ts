@@ -1,5 +1,5 @@
 // Failure cases: automatic runs rewrite published issues; report/receipt commits split; empty gaps
-// starve later daily/weekly/monthly issues or make a failed run look successful. All use a local model stub.
+// starve later daily/weekly/monthly issues, fail every run or publish an empty issue. All use a local model stub.
 import { editionAt, stub, tag } from "./setup.ts";
 import assert from "node:assert/strict";
 import { after, before, beforeEach, test } from "node:test";
@@ -20,6 +20,7 @@ before(async () => {
 });
 beforeEach(async () => {
   await sql`DELETE FROM reports`;
+  await sql`DELETE FROM settings WHERE starts_with(key, 'reports.skipped.')`;
   await sql`DELETE FROM articles WHERE source_id = ${SOURCE}`;
 });
 after(async () => { await provider.close(); await stopBoss(); await closeDb(); });
@@ -75,16 +76,44 @@ test("report publication and its receipt commit together and recovery reuses the
   assert.equal((await sql`SELECT status FROM receipts WHERE subject = 'report:weekly:2024-W18'`)[0]!.status, "completed");
 });
 
-test("empty older gaps cannot starve a later daily, weekly or monthly, and failures remain visible", async () => {
+test("empty older gaps cannot starve a later daily, weekly or monthly; they are skipped once, not failed", async () => {
   // An older issue carried an item; the days after it are empty. Weeklies and monthlies are compiled from dailies.
   const early = await item("2024-01-23");
   await sql`INSERT INTO reports (kind, key, window_start, window_end, content, generated_at)
     VALUES ('daily', '2024-01-23', now(), now(), ${sql.json({ sections: [{ label: "行业动态", items: [{ itemId: early, title: early }] }] })}, now())`;
   await item("2024-02-02");
-  await assert.rejects(composeDueReports(editionAt("daily", "2024-02-02", 3600)), /reports:/);
+  const now = editionAt("daily", "2024-02-02", 3600);
+  const first = await composeDueReports(now);
+  assert.deepEqual(first.failed, [], "an empty window is not a failure");
   for (const [kind, key] of [["daily", "2024-02-02"], ["weekly", "2024-W04"], ["monthly", "2024-01"]]) {
     assert.ok(await report(kind!, key!), `${kind} ${key} was recovered past the empty gaps`);
   }
+  const gap = ["2024-01-24", "2024-01-25", "2024-01-26", "2024-01-27", "2024-01-28", "2024-01-29", "2024-01-30", "2024-01-31", "2024-02-01"];
+  assert.deepEqual(first.skipped.filter((k) => k.startsWith("daily:")), gap.map((d) => `daily:${d}`));
+  for (const d of gap) assert.equal(await report("daily", d), undefined, `nothing is published for ${d}`);
+  const [skip] = await sql`SELECT value FROM settings WHERE key = 'reports.skipped.daily:2024-01-24'`;
+  assert.match(skip!.value.reason, /nothing judged in its window/);
+  assert.equal(skip!.value.windowEnd, editionAt("daily", "2024-01-24").toISOString());
+  const again = await composeDueReports(now);
+  assert.deepEqual([again.generated, again.failed, again.skipped], [[], [], []], "a skipped issue is not tried again");
+});
+
+test("a first daily with nothing judged is skipped and the next day's issue still comes out", async () => {
+  // A site whose first crawl came after the edition time: the due daily's window holds nothing judged.
+  const before = await composeDueReports(editionAt("daily", "2024-03-10", 3600));
+  assert.deepEqual([before.generated, before.failed, before.skipped], [[], [], ["daily:2024-03-10"]]);
+  assert.deepEqual((await composeDueReports(editionAt("daily", "2024-03-10", 7200))).skipped, [], "later calls the same day do nothing");
+  await item("2024-03-11");
+  const next = await composeDueReports(editionAt("daily", "2024-03-11", 60));
+  assert.deepEqual([next.generated, next.failed, next.skipped], [["daily:2024-03-11"], [], []]);
+  assert.equal(await report("daily", "2024-03-10"), undefined);
+  assert.ok(await report("daily", "2024-03-11"));
+});
+
+test("an explicit regeneration of an issue with nothing to carry is still refused", async () => {
+  await assert.rejects(composeDaily("2024-04-10", "editor"), /nothing judged in its window/);
+  await assert.rejects(composeWeekly("2024-W15", "editor"), /no daily entries in the period/);
+  assert.equal((await sql`SELECT count(*)::int AS n FROM settings WHERE starts_with(key, 'reports.skipped.')`)[0]!.n, 0, "only the scheduled run records skips");
 });
 
 test("a week or month that ended before the first daily is not due, so a site started mid-month runs clean", async () => {
