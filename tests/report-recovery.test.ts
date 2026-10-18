@@ -110,6 +110,34 @@ test("a first daily with nothing judged is skipped and the next day's issue stil
   assert.ok(await report("daily", "2024-03-11"));
 });
 
+test("a daily whose window still has articles awaiting analysis fails and is tried again, not skipped", async () => {
+  const id = `recovery-${tag()}`;
+  const at = editionAt("daily", "2024-06-10", -6 * 3600);
+  await sql`INSERT INTO articles (id, source_id, identity_key, url, title, discovered_at, timeline_at)
+    VALUES (${id}, ${SOURCE}, ${id}, 'https://example.com/pending', ${id}, ${at}, ${at})`;
+  const now = editionAt("daily", "2024-06-10", 600);
+  await assert.rejects(composeDueReports(now), /daily:2024-06-10 failed/);
+  assert.equal((await sql`SELECT count(*)::int AS n FROM settings WHERE key = 'reports.skipped.daily:2024-06-10'`)[0]!.n, 0);
+  // Once judged (here: given up on), nothing is pending and the issue is skipped.
+  await sql`UPDATE articles SET processing_state = 'failed' WHERE id = ${id}`;
+  assert.deepEqual((await composeDueReports(now)).skipped, ["daily:2024-06-10"]);
+});
+
+test("a weekly with nothing to carry is not skipped while a daily of its week still fails", async () => {
+  // The first daily is Monday 2024-07-01; the Tuesday has an article awaiting analysis, so it fails.
+  await sql`INSERT INTO reports (kind, key, window_start, window_end, content, generated_at)
+    VALUES ('daily', '2024-07-01', now(), now(), ${sql.json({ sections: [] })}, now())`;
+  const id = `recovery-${tag()}`;
+  const at = editionAt("daily", "2024-07-02", -6 * 3600);
+  await sql`INSERT INTO articles (id, source_id, identity_key, url, title, discovered_at, timeline_at)
+    VALUES (${id}, ${SOURCE}, ${id}, 'https://example.com/pending', ${id}, ${at}, ${at})`;
+  const now = editionAt("weekly", "2024-07-08", 600);
+  await assert.rejects(composeDueReports(now), /daily:2024-07-02.*weekly:2024-W27 failed/);
+  assert.equal((await sql`SELECT count(*)::int AS n FROM settings WHERE key = 'reports.skipped.weekly:2024-W27'`)[0]!.n, 0);
+  await sql`UPDATE articles SET processing_state = 'failed' WHERE id = ${id}`;
+  assert.ok((await composeDueReports(now)).skipped.includes("weekly:2024-W27"));
+});
+
 test("an explicit regeneration of an issue with nothing to carry is still refused", async () => {
   await assert.rejects(composeDaily("2024-04-10", "editor"), /nothing judged in its window/);
   await assert.rejects(composeWeekly("2024-W15", "editor"), /no daily entries in the period/);

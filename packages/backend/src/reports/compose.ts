@@ -16,7 +16,7 @@ import { chatJson } from "../providers/llm.ts";
 import { completeReceipt } from "../providers/receipts.ts";
 import { shutdownSignal } from "../jobs/queue.ts";
 import { emit } from "../modules.ts";
-import { NothingToReportError, recordSkipped, skippedKeys, type ReportKind } from "./skipped.ts";
+import { NothingToReportError, recordSkipped, skippable, skippedKeys, type ReportKind } from "./skipped.ts";
 import { arrangeDaily, candidates, dailyEdition, periodEntries, sectionOf, SECTION_ORDER, type Candidate, type EditionEntry } from "./edition.ts";
 
 export { NothingToReportError };
@@ -293,7 +293,7 @@ const nextMonth = (label: string) => {
  * The scheduled run (every half hour): every issue due by `now` that does not exist yet, oldest first.
  * The newest one appears at the first run after it falls due (above); a long stop or an older gap is
  * filled too. A kind with no issue yet only gets its latest due one. An issue with nothing to carry
- * (NothingToReportError) is recorded as skipped, once: nothing is published for it, it is not tried
+ * (NothingToReportError) is recorded as skipped, once, when nothing it could still carry is pending (see skippable): nothing is published for it, it is not tried
  * again by later runs and it is not a failure. An issue that fails does not hold up the others; at most
  * `limit` issues are written per run, the next run continues.
  */
@@ -321,7 +321,7 @@ export async function composeDueReports(now = new Date(), limit = 8): Promise<{ 
         await k.compose(key);
         generated.push(`${k.kind}:${key}`);
       } catch (error) {
-        if (error instanceof NothingToReportError) {
+        if (error instanceof NothingToReportError && (await skippable(k.kind, error, firstDaily))) {
           await recordSkipped(k.kind, key, error);
           skipped.push(`${k.kind}:${key}`);
           console.log(JSON.stringify({ level: "info", msg: "report skipped: nothing to carry", report: `${k.kind}:${key}`, reason: error.message }));
