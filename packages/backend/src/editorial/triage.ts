@@ -37,6 +37,7 @@ export interface TriageSettings {
   enabled: boolean;
   model: string;
   threshold: number;
+  timeoutMs: number;
 }
 
 /** Read at call time, so a deployment's variables apply without a restart of tests or workers. */
@@ -44,7 +45,8 @@ export function triageSettings(env: NodeJS.ProcessEnv = process.env): TriageSett
   const raw = env.TRIAGE_THRESHOLD?.trim();
   const threshold = raw ? Number(raw) : 5.5;
   if (!Number.isFinite(threshold) || threshold < 0 || threshold > 10) throw new Error("TRIAGE_THRESHOLD must be a number from 0 to 10, e.g. 5.5");
-  return { enabled: env.TRIAGE_ENABLED === "true", model: env.TRIAGE_MODEL?.trim() || "decision-model-preview", threshold };
+  const timeoutMs = Number(env.TRIAGE_TIMEOUT_MS?.trim() || 20_000);
+  return { enabled: env.TRIAGE_ENABLED === "true", model: env.TRIAGE_MODEL?.trim() || "decision-model-preview", threshold, timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 20_000 };
 }
 
 export interface TriageRun {
@@ -75,7 +77,7 @@ export async function runTriage(
   try {
     const res = await decide({
       model: s.model, purpose: TRIAGE_PURPOSE, subject: `article:${a.id}@${a.revision}`, promptVersion: TRIAGE_PROMPT_VERSION,
-      state: prefilterUser(a), questions: QUESTIONS, attemptTag: opts.attemptTag, timeoutMs: 20_000,
+      state: prefilterUser(a), questions: QUESTIONS, attemptTag: opts.attemptTag, timeoutMs: s.timeoutMs,
     });
     const score = Number(res.answers.value!.score);
     if (!Number.isFinite(score)) throw new Error(`no value score in the answer: ${JSON.stringify(res.answers.value).slice(0, 200)}`);
