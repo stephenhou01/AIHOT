@@ -16,6 +16,7 @@ import { sql } from "../db.ts";
 import { logError } from "../lib/log-error.ts";
 import { serverModules, type Scheduled } from "../modules.ts";
 import { translatePending } from "../editorial/translate.ts";
+import { triageSettings } from "../editorial/triage.ts";
 import { composeDueReports } from "../reports/compose.ts";
 import { analysisHandler } from "./content.ts";
 import { eventHandlers } from "./events.ts";
@@ -343,14 +344,16 @@ async function exhaustedBudgets(): Promise<Array<{ service: string; window: "sto
 
 /** The read-only view for whoever triggers the batches: progress, recent trouble and paid usage. */
 export async function pipelineStatus() {
-  const [intake] = await sql<{ last_fetch_at: Date | null; last_ok_at: Date | null; last_schedule_at: Date | null; new_24h: number; selected_24h: number; stories_24h: number }[]>`
+  const [intake] = await sql<{ last_fetch_at: Date | null; last_ok_at: Date | null; last_schedule_at: Date | null; new_24h: number; selected_24h: number; stories_24h: number; triaged_24h: number; triage_dropped_24h: number }[]>`
     SELECT
       (SELECT max(last_fetch_at) FROM sources WHERE enabled) AS last_fetch_at,
       (SELECT max(last_ok_at) FROM sources WHERE enabled) AS last_ok_at,
       (SELECT max(started_at) FROM job_runs WHERE job = 'sources.schedule' AND status = 'ok') AS last_schedule_at,
       (SELECT count(*)::int FROM articles WHERE discovered_at > now() - interval '1 day') AS new_24h,
       (SELECT count(*)::int FROM publications WHERE selected AND discovered_at > now() - interval '1 day') AS selected_24h,
-      (SELECT count(DISTINCT story_id)::int FROM publications WHERE story_id IS NOT NULL AND discovered_at > now() - interval '1 day') AS stories_24h`;
+      (SELECT count(DISTINCT story_id)::int FROM publications WHERE story_id IS NOT NULL AND discovered_at > now() - interval '1 day') AS stories_24h,
+      (SELECT count(*)::int FROM analyses WHERE created_at > now() - interval '1 day' AND output ? 'triage') AS triaged_24h,
+      (SELECT count(*)::int FROM analyses WHERE created_at > now() - interval '1 day' AND (output->'triage'->>'dropped')::boolean) AS triage_dropped_24h`;
   const reports = await sql<{ kind: string; key: string; generated_at: Date }[]>`
     SELECT DISTINCT ON (kind) kind, key, generated_at FROM reports ORDER BY kind, generated_at DESC`;
   const failedRuns = await sql<{ job: string; started_at: Date; error: string | null }[]>`
@@ -379,11 +382,12 @@ export async function pipelineStatus() {
   const open = new Map((await exhaustedBudgets()).map((b) => [b.service, b.window]));
   return {
     valves: { collect: collecting(), modelCalls: config.modelCallsEnabled },
+    triage: triageStatus(),
     lastCollectionAt: intake!.last_fetch_at,
     lastSuccessfulCollectionAt: intake!.last_ok_at,
     lastCollectionScheduledAt: intake!.last_schedule_at,
     lastBatch: lastBatch ? { startedAt: lastBatch.started_at, finishedAt: lastBatch.finished_at, status: lastBatch.status, done: lastBatch.done, errors: lastBatch.errors ?? [] } : null,
-    last24h: { newArticles: intake!.new_24h, selected: intake!.selected_24h, stories: intake!.stories_24h },
+    last24h: { newArticles: intake!.new_24h, selected: intake!.selected_24h, stories: intake!.stories_24h, triaged: intake!.triaged_24h, droppedByTriage: intake!.triage_dropped_24h },
     latestReports: Object.fromEntries(reports.map((r) => [r.kind, { key: r.key, generatedAt: r.generated_at }])),
     pending: await pipelinePending(),
     recentErrors: { failedRuns, failedArticles, failedJobs },
@@ -394,4 +398,14 @@ export async function pipelineStatus() {
       costDay: b.cost === null ? null : { amount: Number(b.cost), currency: b.currency },
     })),
   };
+}
+
+/** The triage settings in force, or the configuration error that would fail every triage. */
+function triageStatus(): { enabled: boolean; model: string; threshold: number } | { error: string } {
+  try {
+    const { enabled, model, threshold } = triageSettings();
+    return { enabled, model, threshold };
+  } catch (error) {
+    return { error: (error as Error).message };
+  }
 }

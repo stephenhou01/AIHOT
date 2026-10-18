@@ -323,3 +323,9 @@ until out=$(curl -sf -X POST -H "Authorization: Bearer $CRON_SECRET" --max-time 
 done
 curl -s -H "Authorization: Bearer $CRON_SECRET" https://<域名>/api/pipeline/status | jq .
 ```
+
+## 价值初筛（triage）
+
+`TRIAGE_ENABLED=true` 时，预筛判 PASS 的稿件先交给百炼的决策模型（`decision-model-preview`，接口 `{LLM_BASE_URL}/systemone`）打一个 0–10 的价值分；低于 `TRIAGE_THRESHOLD`（默认 5.5）的稿件不再评分、抽结构、写中文标题摘要，像 BLOCK 一样停下，后台文章页显示 `low value (triage x.xx)`。每篇稿件的分数记在分析结果 `output.triage` 里（分数、门槛、是否丢弃），`/api/pipeline/status` 的 `last24h.triaged` / `droppedByTriage` 给出当天的数量。
+
+决策模型出错、超时（`TRIAGE_TIMEOUT_MS`，默认 20 秒）或 `decision` 熔断打满时，稿件照常往下走（记下 `output.triage.error`），不会因此丢稿。门槛按一天的实测定：2026-10-18 的 72 篇里，5.5 以下约三成，没有一篇入选稿件。调门槛前先看几天 `output.triage.score` 和入选结果。
