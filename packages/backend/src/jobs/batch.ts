@@ -267,8 +267,15 @@ async function drain(active: Lane[], ctx: { left: () => number; report: BatchRep
       }
     }
   };
-  await Promise.all(active.flatMap((l) => Array.from({ length: l.concurrency }, () => lane(l))));
-  return !outOfTime;
+  // A lane stops when its fetch came back empty while nothing ran; a job another lane queued (or whose
+  // start time came) in between would be left runnable, and the call would wrongly report work cut
+  // short. Run the lanes again until no job is runnable at the end.
+  const queues = active.map((l) => l.queue);
+  for (;;) {
+    await Promise.all(active.flatMap((l) => Array.from({ length: l.concurrency }, () => lane(l))));
+    if (outOfTime) return false;
+    if ((await runnable(queues)) === 0) return true;
+  }
 }
 
 async function runnable(queues: string[]): Promise<number> {
