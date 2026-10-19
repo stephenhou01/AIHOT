@@ -9,6 +9,7 @@
 import { addDays, beijingAt, beijingDate, isValidDate } from "@aihot/contracts/time";
 import { ALERTS, EDITION_TIMES } from "@aihot/site";
 import { sql } from "../db.ts";
+import { dailySkipped } from "../reports/skipped.ts";
 import { beijingDay, beijingStamp, duration, formatAlert, formatRecovery, sendAlert, type Finding, type Level } from "../notify/feishu.ts";
 import { stepsOnService } from "../editorial/models.ts";
 import { backupConfigured } from "./backup.ts";
@@ -302,7 +303,9 @@ async function dailyReportFindings(now: number): Promise<Finding[]> {
   const overdue = [...dates].filter(date => now >= beijingAt(date, EDITION_TIMES.daily).getTime() + 2 * 3600_000).sort();
   if (!overdue.length) return [];
   const published = new Set((await sql<{ key: string }[]>`SELECT key FROM reports WHERE kind = 'daily' AND key IN ${sql(overdue)}`).map(r => r.key));
-  return overdue.filter(date => !published.has(date)).map(date => ({
+  // An edition the scheduled run skipped (nothing judged in its window) is not missing.
+  const skipped = await dailySkipped(overdue);
+  return overdue.filter(date => !published.has(date) && !skipped.has(date)).map(date => ({
     key: `${DAILY_PREFIX}${date}`, level: "now",
     title: `${date} 的日报还没生成`, impact: `读者看不到 ${date} 的日报`,
     heals: "尚未补齐；需查看运行记录确认是否需要人工补做",
@@ -337,6 +340,12 @@ export async function checkAlerts(now = Date.now()) {
     const date = dailyDate(key);
     if (date) {
       const [report] = await sql`SELECT 1 FROM reports WHERE kind = 'daily' AND key = ${date}`;
+      if (!report && (await dailySkipped([date])).has(date)) {
+        await sendAlert(`${date} 的日报已跳过，停止提醒`, [`${date} 的日报窗口内没有判定过的内容，本期不出刊`]);
+        sent.push(`${key}:skipped`);
+        delete state[key];
+        continue;
+      }
       if (!report && date >= dailyScanFrom(now)) continue;
       if (!report) {
         // Past the scan window a missing edition is closed with one message instead of reminded about forever.

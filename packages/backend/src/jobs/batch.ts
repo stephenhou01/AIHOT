@@ -18,6 +18,7 @@ import { serverModules, type Scheduled } from "../modules.ts";
 import { translatePending } from "../editorial/translate.ts";
 import { triageSettings } from "../editorial/triage.ts";
 import { composeDueReports } from "../reports/compose.ts";
+import { skippedReports } from "../reports/skipped.ts";
 import { analysisHandler } from "./content.ts";
 import { eventHandlers } from "./events.ts";
 import { notifyHandlers } from "./notify.ts";
@@ -266,8 +267,15 @@ async function drain(active: Lane[], ctx: { left: () => number; report: BatchRep
       }
     }
   };
-  await Promise.all(active.flatMap((l) => Array.from({ length: l.concurrency }, () => lane(l))));
-  return !outOfTime;
+  // A lane stops when its fetch came back empty while nothing ran; a job another lane queued (or whose
+  // start time came) in between would be left runnable, and the call would wrongly report work cut
+  // short. Run the lanes again until no job is runnable at the end.
+  const queues = active.map((l) => l.queue);
+  for (;;) {
+    await Promise.all(active.flatMap((l) => Array.from({ length: l.concurrency }, () => lane(l))));
+    if (outOfTime) return false;
+    if ((await runnable(queues)) === 0) return true;
+  }
 }
 
 async function runnable(queues: string[]): Promise<number> {
@@ -389,6 +397,7 @@ export async function pipelineStatus() {
     lastBatch: lastBatch ? { startedAt: lastBatch.started_at, finishedAt: lastBatch.finished_at, status: lastBatch.status, done: lastBatch.done, errors: lastBatch.errors ?? [] } : null,
     last24h: { newArticles: intake!.new_24h, selected: intake!.selected_24h, stories: intake!.stories_24h, triaged: intake!.triaged_24h, droppedByTriage: intake!.triage_dropped_24h },
     latestReports: Object.fromEntries(reports.map((r) => [r.kind, { key: r.key, generatedAt: r.generated_at }])),
+    skippedReports: (await skippedReports(10)).map((r) => ({ report: `${r.kind}:${r.key}`, reason: r.reason, at: r.at })),
     pending: await pipelinePending(),
     recentErrors: { failedRuns, failedArticles, failedJobs },
     budgets: budgets.map((b) => ({

@@ -151,6 +151,7 @@ test("repeated calls carry the intake through analysis and grouping, and an idle
 
   const status = (await call("/api/pipeline/status", SECRET, "GET")).body;
   assert.equal(status.last24h.newArticles, 3);
+  assert.ok(Array.isArray(status.skippedReports), "skipped editions are listed");
   assert.deepEqual(status.triage, { enabled: false, model: "decision-model-preview", threshold: 5.5 }, "triage is off unless TRIAGE_ENABLED is set");
   assert.equal(status.last24h.selected, 3);
   assert.ok(status.lastCollectionAt);

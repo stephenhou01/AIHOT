@@ -17,7 +17,7 @@ beforeEach(async () => {
   Object.assign(process.env, { COLLECT_ENABLED: "true", MODEL_CALLS_ENABLED: "true", FEISHU_INTERNAL_ENABLED: "false" });
   await sql`DELETE FROM reports`;
   await sql`DELETE FROM job_runs WHERE job='reports.compose'`;
-  await sql`DELETE FROM settings WHERE key IN ('alerts.state','heartbeat.worker')`;
+  await sql`DELETE FROM settings WHERE key IN ('alerts.state','heartbeat.worker') OR starts_with(key, 'reports.skipped.')`;
 });
 after(async () => { await stopBoss(); await closeDb(); });
 
@@ -82,4 +82,15 @@ test("legacy alert migrates its date and preserves reminder timing", async () =>
   assert.deepEqual(daily(result.sent), []);
   result = await checkAlerts(at("2026-10-07", "00:31"));
   assert.deepEqual(daily(result.sent), [key("2026-10-06")]);
+});
+
+test("a daily the scheduled run skipped is not missing, and its open alert is closed once", async () => {
+  let result = await checkAlerts(at("2026-10-06", "23:30"));
+  assert.deepEqual(daily(result.sent), [key("2026-10-06")]);
+  await sql`INSERT INTO settings(key,value) VALUES('reports.skipped.daily:2026-10-06',${sql.json({ kind: "daily", key: "2026-10-06", reason: "daily 2026-10-06: nothing judged in its window" })})`;
+  assert.deepEqual(daily((await collectFindings(at("2026-10-07", "09:00"))).map(f => f.key)), [], "a skipped edition is not a finding");
+  result = await checkAlerts(at("2026-10-07", "09:00"));
+  assert.deepEqual(daily(result.sent), [`${key("2026-10-06")}:skipped`]);
+  assert.deepEqual(daily(result.open), []);
+  assert.deepEqual(daily((await checkAlerts(at("2026-10-07", "09:10"))).sent), [], "closed once, not repeated");
 });
